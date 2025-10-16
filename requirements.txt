@@ -7,6 +7,6 @@ rapidfuzz>=3.9
 sqlalchemy>=2.0
 lxml==4.9.3
 soccerdata==1.5.1
-fantraxapi>=3.2
+fantraxapi==0.2.9
 fastapi>=0.115
 uvicorn[standard]>=0.30
