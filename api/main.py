@@ -1,10 +1,20 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import os
 import importlib
 
 app = FastAPI(title="Cheeky FC API")
+
+# CORS (tighten allow_origins to your Vercel URL later)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 API_KEY = os.getenv("API_KEY", "")
 
@@ -12,9 +22,15 @@ API_KEY = os.getenv("API_KEY", "")
 def root():
     return {"ok": True, "message": "Cheeky FC API"}
 
+@app.get("/auth/status")
+def auth_status():
+    return {"ok": True, "has_api_key": bool(API_KEY)}
+
 def require_api_key(request: Request):
-    key = request.headers.get("X-API-Key", "")
-    if not API_KEY or key != API_KEY:
+    sent = request.headers.get("X-API-Key") or request.query_params.get("key")
+    if not API_KEY:
+        raise HTTPException(status_code=401, detail="Server API_KEY is not set")
+    if not sent or sent != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.get("/run")
