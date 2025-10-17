@@ -5,7 +5,7 @@ pydantic>=2.7
 tqdm>=4.66
 rapidfuzz>=3.9
 sqlalchemy>=2.0
-lxml==5.1.0
+lxml==4.9.4
 soccerdata==1.5.1
 fantraxapi==0.2.9
 fastapi>=0.115
