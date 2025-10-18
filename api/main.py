@@ -234,3 +234,53 @@ def matchups_table():
     except Exception as e:
         raise HTTPException(status_code=500, detail=_ascii(e))
 
+@app.post("/stats/refresh")
+def stats_refresh(request: Request):
+    # protect with API key since it triggers scraping
+    require_api_key(request)
+    try:
+        svc = importlib.import_module("src.stats_service")
+        res = svc.refresh(force=True)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_ascii(e))
+
+@app.get("/players/search")
+def players_search(q: str = "", team: str = "", position: str = "", limit: int = 50):
+    try:
+        svc = importlib.import_module("src.stats_service")
+        df = svc.search_players(q=q, team=team, position=position, limit=limit)
+        # return a compact JSON
+        return {
+            "ok": True,
+            "count": int(len(df)),
+            "players": df.to_dict(orient="records"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_ascii(e))
+
+@app.get("/players/compare")
+def players_compare(name: str):
+    """
+    name: comma-separated list of player names
+    """
+    try:
+        names = [n.strip() for n in name.split(",") if n.strip()]
+        if not names:
+            raise HTTPException(status_code=400, detail="Provide ?name=Player A,Player B")
+        svc = importlib.import_module("src.stats_service")
+        df = svc.compare_players(names)
+        return {"ok": True, "count": int(len(df)), "players": df.to_dict(orient="records")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_ascii(e))
+
+@app.get("/matchups/table")
+def matchups_table():
+    try:
+        svc = importlib.import_module("src.stats_service")
+        df = svc.matchup_table()
+        return {"ok": True, "count": int(len(df)), "table": df.to_dict(orient="records")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_ascii(e))
