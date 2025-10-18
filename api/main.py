@@ -75,24 +75,31 @@ def versions():
 @app.get("/debug/periods_raw")
 def debug_periods_raw():
     try:
+        import importlib
         fx = importlib.import_module("src.fantrax_client")
         league = fx.fetch_league_objects()
         periods = league.scoring_periods()
+
         sample = []
-        # Show up to 15 items to keep payload light
-        for k in list(periods.keys())[:15]:
+        # Only include ASCII-safe bits: key repr + period number
+        for k in list(periods.keys())[:20]:
             sp = periods[k]
+            # force ASCII-safe strings (strip non-ascii)
+            key_repr = repr(k)
+            key_repr = key_repr.encode("ascii", "ignore").decode("ascii")
+            key_type = str(type(k)).encode("ascii", "ignore").decode("ascii")
+            number   = getattr(sp, "number", None)
             sample.append({
-                "key_repr": _ascii(repr(k)),
-                "key_type": _ascii(type(k)),
-                "sp_has_number": hasattr(sp, "number"),
-                "sp_number": getattr(sp, "number", None),
-                "sp_start": _ascii(getattr(sp, "start", "")),
-                "sp_end": _ascii(getattr(sp, "end", "")),
+                "key_repr": key_repr,
+                "key_type": key_type,
+                "sp_number": int(number) if number is not None else None,
             })
+
         return {"ok": True, "len": len(periods), "sample": sample}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=_ascii(e))
+        msg = str(e).encode("ascii", "ignore").decode("ascii")
+        raise HTTPException(status_code=500, detail=msg)
+
 
 @app.get("/debug/roster_try")
 def debug_roster_try(week: int = 1):
