@@ -2,7 +2,7 @@ from .config import settings
 from fantraxapi import League
 
 def fetch_league_objects():
-    league = League(settings.league_id, username=settings.fantrax_username, password=settings.fantrax_password)
+    league = League(settings.league_id)
     return league
 
 def get_team_roster_slots(league, week: int):
