@@ -82,3 +82,40 @@ def debug_periods():
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/debug/periods")
+def debug_periods():
+    try:
+        import importlib
+        fx = importlib.import_module("src.fantrax_client")
+        league = fx.fetch_league_objects()
+        periods = league.scoring_periods()
+        out = []
+        for key, sp in periods.items():
+            out.append({
+                "key": key,
+                "number": getattr(sp, "number", None),
+                "start": str(getattr(sp, "start", "")),
+                "end": str(getattr(sp, "end", "")),
+                "range": getattr(sp, "range", ""),
+            })
+        try:
+            out.sort(key=lambda r: (r["number"] is None, r["number"], r["start"]))
+        except Exception:
+            pass
+        return {"ok": True, "periods": out}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/roster-signature")
+def debug_roster_signature():
+    try:
+        import importlib, inspect
+        fx = importlib.import_module("src.fantrax_client")
+        league = fx.fetch_league_objects()
+        sample_team = next(iter(league.teams))
+        sig = str(inspect.signature(sample_team.roster))
+        return {"ok": True, "team": sample_team.name, "roster_signature": sig}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
