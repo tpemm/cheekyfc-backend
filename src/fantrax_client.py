@@ -1,176 +1,151 @@
 import os
-import requests
-from .config import settings
+import pandas as pd
+from dotenv import load_dotenv
+from fantraxapi import FantraxClient
+from pydantic import BaseModel
 
-def _parse_cookie_header(raw: str):
-    cookies = {}
-    for pair in raw.split(";"):
-        pair = pair.strip()
-        if not pair or "=" not in pair:
-            continue
-        k, v = pair.split("=", 1)
-        cookies[k.strip()] = v.strip()
-    return cookies
+load_dotenv()
 
-def _make_session():
-    """Build a requests.Session with your Fantrax cookies loaded."""
-    auth = os.getenv("FANTRAX_COOKIE")         # optional: just the _FantraxAuth token
-    raw  = os.getenv("FANTRAX_COOKIES_RAW")    # optional: the full Cookie header value
-    if not auth and not raw:
-        raise RuntimeError(
-            "No cookie provided. Set FANTRAX_COOKIES_RAW (full Cookie header) "
-            "or FANTRAX_COOKIE (_FantraxAuth token)."
-        )
-    sess = requests.Session()
-    # polite UA to avoid CF blocks
-    sess.headers.update({
-        "User-Agent": "Mozilla/5.0 (CheekyFC/1.0; +https://cheekyfc.example)"
-    })
-    if auth:
-        sess.cookies.set("_FantraxAuth", auth, domain="www.fantrax.com")
-    if raw:
-        for k, v in _parse_cookie_header(raw).items():
-            sess.cookies.set(k, v, domain="www.fantrax.com")
-    return sess
 
-def _get_league_class():
-    import fantraxapi
-    # Try modern layout
-    if hasattr(fantraxapi, "League"):
-        return fantraxapi.League
-    # Try older layout
-    try:
-        from fantraxapi.objs import League as LeagueObj
-        return LeagueObj
-    except Exception:
-        pass
-    if hasattr(fantraxapi, "objs") and hasattr(fantraxapi.objs, "League"):
-        return fantraxapi.objs.League
-    raise ImportError("Could not locate League class in fantraxapi (tried top-level and fantraxapi.objs).")
+# -------------------------------
+# CONFIG / SESSION MANAGEMENT
+# -------------------------------
 
-def fetch_league_objects():
-    League = _get_league_class()
-    sess = _make_session()
-    # Try the known constructor variants in order
-    try:
-        # Most 1.x builds accept session=
-        return League(settings.league_id, session=sess)
-    except TypeError:
-        pass
-    try:
-        # Some builds accept client= (wrapping a Session)
-        return League(settings.league_id, client=sess)
-    except TypeError:
-        pass
-    # Fallback: construct, then attach (some 0.x put .session on the object)
-    league = League(settings.league_id)
-    # Attach if the attribute exists
-    if hasattr(league, "session"):
-        league.session = sess
-        return league
-    if hasattr(league, "_session"):
-        league._session = sess  # last-ditch
-        return league
-    raise TypeError("This fantraxapi build exposes League but provides no way to inject a session/cookies.")
+class CheekyConfig(BaseModel):
+    username: str | None = os.getenv("FANTRAX_USERNAME")
+    password: str | None = os.getenv("FANTRAX_PASSWORD")
+    league_id: str = os.getenv("FANTRAX_LEAGUE_ID", "")
+    cookies: str | None = os.getenv("FANTRAX_COOKIES")
 
-def _resolve_week_key(league, week: int):
-    """
-    Map a 1-based week like 1,2,3... to the league's actual scoring-period key.
-    Some builds use integer numbers; others use short date strings like 'Aug 15'.
-    """
-    periods = league.scoring_periods()  # dict with keys that the library expects
-    # Make an ordered list by 'number' if present, else preserve insertion order
+
+def get_session():
+    cfg = CheekyConfig()
+    client = FantraxClient()
+
+    if cfg.cookies:
+        # Private league cookie authentication
+        session = client.session(cookies=cfg.cookies)
+    elif cfg.username and cfg.password:
+        session = client.session.login(cfg.username, cfg.password)
+    else:
+        raise RuntimeError("Missing Fantrax login credentials or cookies in environment.")
+
+    league = session.league(cfg.league_id)
+    return league
+
+
+# -------------------------------
+# DEBUG UTILITIES
+# -------------------------------
+
+def _list_periods(league):
+    """Return a stable ordered list of (key, sp) from league.scoring_periods()."""
+    periods = league.scoring_periods()
     items = list(periods.items())
-
-    # Prefer sorting by the ScoringPeriod.number if it exists
-    try:
-        items.sort(key=lambda kv: getattr(kv[1], "number"))
-    except Exception:
-        # fallback: keep original order
-        pass
-
-    if week < 1 or week > len(items):
-        raise ValueError(f"Week {week} out of range (1..{len(items)})")
-
-    key, sp = items[week - 1]
-    # key is what roster() expects; can be int or 'Aug 15'
-    return key
-
-def _resolve_week_key(league, week: int):
-    """Return (key, sp) where key is whatever the periods dict uses and sp is the ScoringPeriod object."""
-    periods = league.scoring_periods()  # dict-like: { key -> ScoringPeriod }
-    items = list(periods.items())
-
-    # Prefer to sort by ScoringPeriod.number if it exists; otherwise keep insertion order
     try:
         items.sort(key=lambda kv: getattr(kv[1], "number"))
     except Exception:
         pass
+    return items
 
+
+def _resolve_week_index(league, week: int):
+    items = _list_periods(league)
     if week < 1 or week > len(items):
         raise ValueError(f"Week {week} out of range (1..{len(items)})")
-
     key, sp = items[week - 1]
-    return key, sp
 
-def _call_roster_any(team, key, sp):
-    """Try multiple calling conventions for different fantraxapi builds."""
-    # candidate numeric period
-    num = getattr(sp, "number", None)
     candidates = []
+    candidates.append(("raw_key", key))
+    try:
+        candidates.append(("str_key", str(key)))
+    except Exception:
+        pass
 
-    # 1) Most common: week=<key> (key may be int or string like 'Aug 15')
-    candidates.append(("week", key))
-    # 2) week=<number> (explicit number)
+    num = getattr(sp, "number", None)
     if num is not None:
-        candidates.append(("week", int(num)))
-
-    # 3) scoring_period=<key> / <number>
-    candidates.append(("scoring_period", key))
-    if num is not None:
-        candidates.append(("scoring_period", int(num)))
-
-    # 4) period=<key> / <number>
-    candidates.append(("period", key))
-    if num is not None:
-        candidates.append(("period", int(num)))
-
-    # Try in order
-    last_err = None
-    for param, value in candidates:
         try:
-            return team.roster(**{param: value})
+            candidates.append(("number_int", int(num)))
+        except Exception:
+            candidates.append(("number_raw", num))
+
+    candidates.append(("index_based", week - 1))
+    return candidates, sp
+
+
+# -------------------------------
+# ROSTER CALL TESTERS
+# -------------------------------
+
+def _call_roster_any(team, candidates, sp):
+    """Try many calling conventions for team.roster(...)"""
+    last_err = None
+    tried = []
+    for label, val in candidates:
+        try:
+            tried.append({"style": f"positional({label})", "value": repr(val)})
+            return team.roster(val)
         except Exception as e:
             last_err = e
-            continue
-    # If we get here, surface the most informative error
-    raise TypeError(f"Failed to call team.roster with any known signature. "
-                    f"Tried with key={key!r}, number={num!r}. Last error: {last_err}")
+        for kw in ("week", "period", "scoring_period", "scoringPeriod", "period_number", "periodNumber"):
+            try:
+                tried.append({"style": f"kw {kw}={label}", "value": repr(val)})
+                return team.roster(**{kw: val})
+            except Exception as e:
+                last_err = e
+    raise TypeError(f"team.roster failed for all variants; last error={last_err}; tried={tried}")
 
-def _resolve_period_number(league, week: int) -> int:
-    """
-    Map a 1-based 'week' to the league's ScoringPeriod number (int).
-    According to docs, League.scoring_periods() => dict[int, ScoringPeriod]
-    where the KEY is the period number we can pass to team_roster(...).
-    """
-    periods = league.scoring_periods()  # { period_number (int) : ScoringPeriod }
-    if not isinstance(periods, dict) or not periods:
-        raise RuntimeError("Could not load scoring periods from Fantrax.")
 
-    # Sort by the integer key to make week 1 = first period, week 2 = second, etc.
-    numbers = sorted(int(n) for n in periods.keys())
-    if week < 1 or week > len(numbers):
-        raise ValueError(f"Week {week} out of range (1..{len(numbers)})")
+def _league_team_roster_any(league, team, candidates, sp):
+    """Try league.team_roster(team.id, period_number=INT) and variants."""
+    last_err = None
+    tried = []
+    ints = []
+    for label, val in candidates:
+        if isinstance(val, int):
+            ints.append((label, val))
+        else:
+            try:
+                if isinstance(val, str) and val.isdigit():
+                    ints.append((f"{label}->int", int(val)))
+            except Exception:
+                pass
 
-    return numbers[week - 1]  # the actual integer period_number to call with
+    for label, val in ints:
+        for kw in ("period_number", "period", "scoring_period"):
+            try:
+                tried.append({"style": f"league.team_roster kw {kw}={label}", "value": repr(val)})
+                return league.team_roster(team.id, **{kw: val})
+            except Exception as e:
+                last_err = e
+        try:
+            tried.append({"style": f"league.team_roster positional({label})", "value": repr(val)})
+            return league.team_roster(team.id, val)
+        except Exception as e:
+            last_err = e
+
+    raise TypeError(f"league.team_roster failed for all variants; last error={last_err}; tried={tried}")
+
+
+# -------------------------------
+# MAIN PUBLIC FUNCTION
+# -------------------------------
 
 def get_team_roster_slots(league, week: int):
-    period_number = _resolve_period_number(league, week)
-
+    candidates, sp = _resolve_week_index(league, week)
     rows = []
-    # Per docs, use League.team_roster(team_id, period_number)
     for team in league.teams:
-        roster = league.team_roster(team.id, period_number=period_number)
+        roster = None
+        try:
+            roster = _call_roster_any(team, candidates, sp)
+        except Exception as team_err:
+            try:
+                roster = _league_team_roster_any(league, team, candidates, sp)
+            except Exception as lg_err:
+                raise TypeError(
+                    f"Roster retrieval failed for team {team.name}. "
+                    f"team.roster error: {team_err}; league.team_roster error: {lg_err}"
+                )
         for slot in roster.slots:
             rows.append({
                 "team_id": team.id,
@@ -182,3 +157,13 @@ def get_team_roster_slots(league, week: int):
             })
     return rows
 
+
+# -------------------------------
+# ENTRY POINT USED BY API
+# -------------------------------
+
+def run_fantrax_pull(week: int = 1):
+    league = get_session()
+    roster_rows = get_team_roster_slots(league, week)
+    df = pd.DataFrame(roster_rows)
+    return df
