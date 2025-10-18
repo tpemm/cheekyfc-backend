@@ -181,3 +181,4 @@ def get_team_roster_slots(league, week: int):
                 "is_bench": getattr(slot, "is_bench", False),
             })
     return rows
+
