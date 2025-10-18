@@ -183,9 +183,8 @@ def weekly_parquet(week: int = 1):
         str(f), media_type="application/octet-stream", filename=f.name
     )
 
-@app.post("/stats/refresh")
+@app.api_route("/stats/refresh", methods=["GET", "POST"])
 def stats_refresh(request: Request):
-    # protect with API key since it triggers scraping
     require_api_key(request)
     try:
         svc = importlib.import_module("src.stats_service")
@@ -193,6 +192,7 @@ def stats_refresh(request: Request):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=_ascii(e))
+
 
 @app.get("/players/search")
 def players_search(q: str = "", team: str = "", position: str = "", limit: int = 50):
