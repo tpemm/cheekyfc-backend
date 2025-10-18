@@ -1,6 +1,6 @@
 import os
+import requests
 from .config import settings
-from fantraxapi import League  # 1.x style
 
 def _parse_cookie_header(raw: str):
     cookies = {}
@@ -12,20 +12,66 @@ def _parse_cookie_header(raw: str):
         cookies[k.strip()] = v.strip()
     return cookies
 
-def fetch_league_objects():
-    # Prefer explicit _FantraxAuth if you ever add it; otherwise accept full Cookie header
-    auth = os.getenv("FANTRAX_COOKIE")
-    raw  = os.getenv("FANTRAX_COOKIES_RAW")
-    if auth:
-        cookies = {"_FantraxAuth": auth}
-    elif raw:
-        cookies = _parse_cookie_header(raw)
-    else:
+def _make_session():
+    """Build a requests.Session with your Fantrax cookies loaded."""
+    auth = os.getenv("FANTRAX_COOKIE")         # optional: just the _FantraxAuth token
+    raw  = os.getenv("FANTRAX_COOKIES_RAW")    # optional: the full Cookie header value
+    if not auth and not raw:
         raise RuntimeError(
             "No cookie provided. Set FANTRAX_COOKIES_RAW (full Cookie header) "
-            "or FANTRAX_COOKIE (the _FantraxAuth token)."
+            "or FANTRAX_COOKIE (_FantraxAuth token)."
         )
-    return League(settings.league_id, cookies=cookies)
+    sess = requests.Session()
+    # polite UA to avoid CF blocks
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (CheekyFC/1.0; +https://cheekyfc.example)"
+    })
+    if auth:
+        sess.cookies.set("_FantraxAuth", auth, domain="www.fantrax.com")
+    if raw:
+        for k, v in _parse_cookie_header(raw).items():
+            sess.cookies.set(k, v, domain="www.fantrax.com")
+    return sess
+
+def _get_league_class():
+    import fantraxapi
+    # Try modern layout
+    if hasattr(fantraxapi, "League"):
+        return fantraxapi.League
+    # Try older layout
+    try:
+        from fantraxapi.objs import League as LeagueObj
+        return LeagueObj
+    except Exception:
+        pass
+    if hasattr(fantraxapi, "objs") and hasattr(fantraxapi.objs, "League"):
+        return fantraxapi.objs.League
+    raise ImportError("Could not locate League class in fantraxapi (tried top-level and fantraxapi.objs).")
+
+def fetch_league_objects():
+    League = _get_league_class()
+    sess = _make_session()
+    # Try the known constructor variants in order
+    try:
+        # Most 1.x builds accept session=
+        return League(settings.league_id, session=sess)
+    except TypeError:
+        pass
+    try:
+        # Some builds accept client= (wrapping a Session)
+        return League(settings.league_id, client=sess)
+    except TypeError:
+        pass
+    # Fallback: construct, then attach (some 0.x put .session on the object)
+    league = League(settings.league_id)
+    # Attach if the attribute exists
+    if hasattr(league, "session"):
+        league.session = sess
+        return league
+    if hasattr(league, "_session"):
+        league._session = sess  # last-ditch
+        return league
+    raise TypeError("This fantraxapi build exposes League but provides no way to inject a session/cookies.")
 
 def get_team_roster_slots(league, week: int):
     rows = []
