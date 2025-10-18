@@ -10,7 +10,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 CACHE_DIR = DATA_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-LEAGUE = os.getenv("COMPETITION", "Premier League")
+LEAGUE = os.getenv("COMPETITION", "ENG-Premier League")
 SEASON = os.getenv("SEASON", "2024-2025")  # adjust if needed
 
 # Basic in-process memo to avoid refetching during one request burst
