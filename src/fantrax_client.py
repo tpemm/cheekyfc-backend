@@ -1,6 +1,11 @@
-from .config import settings
-from fantraxapi.league import League
 import os
+from .config import settings
+
+# be compatible with multiple fantraxapi versions
+try:
+    from fantraxapi import League                  # newer docs say this works
+except ImportError:
+    from fantraxapi.objs import League            # older 0.x use this
 
 def _parse_cookie_header(raw: str):
     cookies = {}
@@ -13,19 +18,20 @@ def _parse_cookie_header(raw: str):
     return cookies
 
 def fetch_league_objects():
-    # Prefer explicit _FantraxAuth if you later find it
-    auth = os.getenv("FANTRAX_COOKIE")  # optional
-    raw  = os.getenv("FANTRAX_COOKIES_RAW")  # whole "Cookie" header value
+    # Prefer explicit _FantraxAuth if you have it, else use full Cookie header
+    auth = os.getenv("FANTRAX_COOKIE")
+    raw  = os.getenv("FANTRAX_COOKIES_RAW")
     if auth:
         cookies = {"_FantraxAuth": auth}
     elif raw:
         cookies = _parse_cookie_header(raw)
     else:
-        raise RuntimeError("No cookie provided. Set FANTRAX_COOKIES_RAW (full Cookie header) or FANTRAX_COOKIE (_FantraxAuth).")
+        raise RuntimeError(
+            "No cookie provided. Set FANTRAX_COOKIES_RAW (full Cookie header) "
+            "or FANTRAX_COOKIE (the _FantraxAuth token)."
+        )
 
-    # Instantiate the league using the cookies dict
-    league = League(settings.league_id, cookies=cookies)
-    return league
+    return League(settings.league_id, cookies=cookies)
 
 def get_team_roster_slots(league, week: int):
     rows = []
@@ -41,3 +47,4 @@ def get_team_roster_slots(league, week: int):
                 "is_bench": getattr(slot, "is_bench", False),
             })
     return rows
+
