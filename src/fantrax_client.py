@@ -96,22 +96,62 @@ def _resolve_week_key(league, week: int):
     # key is what roster() expects; can be int or 'Aug 15'
     return key
 
-def get_team_roster_slots(league, week: int):
-    # Convert user week to the exact key type roster() expects
-    week_key = _resolve_week_key(league, week)
+def _resolve_week_key(league, week: int):
+    """Return (key, sp) where key is whatever the periods dict uses and sp is the ScoringPeriod object."""
+    periods = league.scoring_periods()  # dict-like: { key -> ScoringPeriod }
+    items = list(periods.items())
 
+    # Prefer to sort by ScoringPeriod.number if it exists; otherwise keep insertion order
+    try:
+        items.sort(key=lambda kv: getattr(kv[1], "number"))
+    except Exception:
+        pass
+
+    if week < 1 or week > len(items):
+        raise ValueError(f"Week {week} out of range (1..{len(items)})")
+
+    key, sp = items[week - 1]
+    return key, sp
+
+def _call_roster_any(team, key, sp):
+    """Try multiple calling conventions for different fantraxapi builds."""
+    # candidate numeric period
+    num = getattr(sp, "number", None)
+    candidates = []
+
+    # 1) Most common: week=<key> (key may be int or string like 'Aug 15')
+    candidates.append(("week", key))
+    # 2) week=<number> (explicit number)
+    if num is not None:
+        candidates.append(("week", int(num)))
+
+    # 3) scoring_period=<key> / <number>
+    candidates.append(("scoring_period", key))
+    if num is not None:
+        candidates.append(("scoring_period", int(num)))
+
+    # 4) period=<key> / <number>
+    candidates.append(("period", key))
+    if num is not None:
+        candidates.append(("period", int(num)))
+
+    # Try in order
+    last_err = None
+    for param, value in candidates:
+        try:
+            return team.roster(**{param: value})
+        except Exception as e:
+            last_err = e
+            continue
+    # If we get here, surface the most informative error
+    raise TypeError(f"Failed to call team.roster with any known signature. "
+                    f"Tried with key={key!r}, number={num!r}. Last error: {last_err}")
+
+def get_team_roster_slots(league, week: int):
+    key, sp = _resolve_week_key(league, week)
     rows = []
     for team in league.teams:
-        # Try calling roster() with the derived key; handle variants gracefully
-        try:
-            roster = team.roster(week=week_key)
-        except TypeError:
-            # Some builds want the period number specifically
-            num = getattr(league.scoring_periods()[week_key], "number", None)
-            if num is None:
-                raise
-            roster = team.roster(week=num)
-
+        roster = _call_roster_any(team, key, sp)
         for slot in roster.slots:
             rows.append({
                 "team_id": team.id,
@@ -122,4 +162,3 @@ def get_team_roster_slots(league, week: int):
                 "is_bench": getattr(slot, "is_bench", False),
             })
     return rows
-
