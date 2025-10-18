@@ -1,11 +1,22 @@
 import os
 from .config import settings
 
-# be compatible with multiple fantraxapi versions
-try:
-    from fantraxapi import League                  # newer docs say this works
-except ImportError:
-    from fantraxapi.objs import League            # older 0.x use this
+# Be compatible with multiple fantraxapi versions
+def _get_league_class():
+    import fantraxapi
+    # 1) Preferred: top-level (docs show this)
+    if hasattr(fantraxapi, "League"):
+        return fantraxapi.League
+    # 2) Older/newer layout: fantraxapi.objs.League (per docs page)
+    try:
+        from fantraxapi.objs import League as LeagueObj  # may not exist on some builds
+        return LeagueObj
+    except Exception:
+        pass
+    # 3) Last-ditch: attribute on submodule if present
+    if hasattr(fantraxapi, "objs") and hasattr(fantraxapi.objs, "League"):
+        return fantraxapi.objs.League
+    raise ImportError("Could not locate League class in fantraxapi (tried top-level and fantraxapi.objs).")
 
 def _parse_cookie_header(raw: str):
     cookies = {}
@@ -18,7 +29,7 @@ def _parse_cookie_header(raw: str):
     return cookies
 
 def fetch_league_objects():
-    # Prefer explicit _FantraxAuth if you have it, else use full Cookie header
+    # Accept either a single _FantraxAuth token or the full Cookie header
     auth = os.getenv("FANTRAX_COOKIE")
     raw  = os.getenv("FANTRAX_COOKIES_RAW")
     if auth:
@@ -31,6 +42,7 @@ def fetch_league_objects():
             "or FANTRAX_COOKIE (the _FantraxAuth token)."
         )
 
+    League = _get_league_class()
     return League(settings.league_id, cookies=cookies)
 
 def get_team_roster_slots(league, week: int):
@@ -47,4 +59,3 @@ def get_team_roster_slots(league, week: int):
                 "is_bench": getattr(slot, "is_bench", False),
             })
     return rows
-
