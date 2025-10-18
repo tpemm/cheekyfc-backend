@@ -22,7 +22,7 @@ API_KEY = os.getenv("API_KEY", "")
 
 
 # -----------------------------
-# Basic helpers
+# Helpers
 # -----------------------------
 def _ascii(x):
     try:
@@ -64,7 +64,7 @@ def cookies_status():
 
 
 # -----------------------------
-# Debug: versions / periods / roster
+# Debug: versions / probe-based periods & roster
 # -----------------------------
 @app.get("/about/versions")
 def versions():
@@ -82,99 +82,66 @@ def versions():
 @app.get("/debug/periods_raw")
 def debug_periods_raw():
     """
-    Return only plain ASCII ints so latin-1 encoding can never choke.
+    ASCII-safe endpoint that avoids fantraxapi.scoring_periods() entirely.
+    It *probes* which integer period numbers work by calling league.team_roster(...)
+    for period numbers 1..60 and returns those that succeed.
     """
     try:
-        import importlib
         fx = importlib.import_module("src.fantrax_client")
         league = fx.fetch_league_objects()
-        periods = league.scoring_periods()
-
-        out = []
-        for k in list(periods.keys())[:50]:
-            sp = periods[k]
-            num = getattr(sp, "number", None)
-            if isinstance(num, int):
-                out.append(int(num))
-            elif isinstance(k, int):
-                out.append(int(k))
-            else:
-                out.append(0)
-
-        return JSONResponse(content={"ok": True, "count": len(periods), "numbers_sample": out})
+        nums = fx.probe_valid_period_numbers(league, max_probe=60)
+        return JSONResponse(content={"ok": True, "count": len(nums), "numbers_sample": nums[:20]})
     except Exception as e:
-        msg = str(e).encode("ascii", "ignore").decode("ascii")
+        msg = _ascii(e)
         return JSONResponse(status_code=500, content={"ok": False, "error": msg})
 
 
 @app.get("/debug/roster_try")
 def debug_roster_try(week: int = 1):
+    """
+    Probe-based roster test:
+      1) Discover valid integer period numbers.
+      2) Map the requested 1-based 'week' to that list.
+      3) Try league.team_roster(...) with common signatures.
+    Returns ok:true if any call succeeds for the first team.
+    """
     try:
-        import importlib
         fx = importlib.import_module("src.fantrax_client")
         league = fx.fetch_league_objects()
-        candidates, sp = fx._resolve_week_index(league, week)
-        team = next(iter(league.teams))
 
-        # team.roster variants
-        for label, val in candidates:
+        # 1) discover valid period numbers (ints)
+        valid = fx.probe_valid_period_numbers(league, max_probe=60)
+        if not valid:
+            return {"ok": False, "message": "No valid period numbers discovered (cookie may be expired)."}
+        if week < 1 or week > len(valid):
+            return {"ok": False, "message": f"Week {week} out of range (1..{len(valid)})"}
+
+        period_number = valid[week - 1]
+
+        # 2) pick first team
+        try:
+            team = next(iter(league.teams))
+        except Exception:
+            return {"ok": False, "message": "Could not iterate league.teams."}
+
+        # 3) try the common signatures
+        for kw in ("period_number", "period", "scoring_period"):
             try:
-                team.roster(val)
-                return {
-                    "ok": True,
-                    "method": "team.roster(positional)",
-                    "used": {"label": _ascii(label), "value": _ascii(val)},
-                }
+                league.team_roster(team.id, **{kw: int(period_number)})
+                return {"ok": True, "method": f"league.team_roster({kw}=...)", "period_number": int(period_number)}
             except Exception:
                 pass
-            for kw in (
-                "week",
-                "period",
-                "scoring_period",
-                "scoringPeriod",
-                "period_number",
-                "periodNumber",
-            ):
-                try:
-                    team.roster(**{kw: val})
-                    return {
-                        "ok": True,
-                        "method": f"team.roster({kw}=...)",
-                        "used": {"label": _ascii(label), "value": _ascii(val)},
-                    }
-                except Exception:
-                    pass
+        try:
+            league.team_roster(team.id, int(period_number))
+            return {"ok": True, "method": "league.team_roster(positional)", "period_number": int(period_number)}
+        except Exception:
+            pass
 
-        # league.team_roster variants
-        ints = []
-        for label, val in candidates:
-            if isinstance(val, int):
-                ints.append((label, val))
-            elif isinstance(val, str) and val.isdigit():
-                ints.append((f"{label}->int", int(val)))
-
-        for label, val in ints:
-            for kw in ("period_number", "period", "scoring_period"):
-                try:
-                    league.team_roster(team.id, **{kw: val})
-                    return {
-                        "ok": True,
-                        "method": f"league.team_roster({kw}=...)",
-                        "used": {"label": _ascii(label), "value": _ascii(val)},
-                    }
-                except Exception:
-                    pass
-            try:
-                league.team_roster(team.id, val)
-                return {
-                    "ok": True,
-                    "method": "league.team_roster(positional)",
-                    "used": {"label": _ascii(label), "value": _ascii(val)},
-                }
-            except Exception:
-                pass
-
-        return {"ok": False, "message": "Tried all known roster call variants; none succeeded."}
+        return {
+            "ok": False,
+            "message": "Tried league.team_roster with period_number/period/scoring_period and positional; none succeeded.",
+            "period_number": int(period_number),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=_ascii(e))
 
