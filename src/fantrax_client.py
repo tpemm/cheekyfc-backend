@@ -73,10 +73,45 @@ def fetch_league_objects():
         return league
     raise TypeError("This fantraxapi build exposes League but provides no way to inject a session/cookies.")
 
+def _resolve_week_key(league, week: int):
+    """
+    Map a 1-based week like 1,2,3... to the league's actual scoring-period key.
+    Some builds use integer numbers; others use short date strings like 'Aug 15'.
+    """
+    periods = league.scoring_periods()  # dict with keys that the library expects
+    # Make an ordered list by 'number' if present, else preserve insertion order
+    items = list(periods.items())
+
+    # Prefer sorting by the ScoringPeriod.number if it exists
+    try:
+        items.sort(key=lambda kv: getattr(kv[1], "number"))
+    except Exception:
+        # fallback: keep original order
+        pass
+
+    if week < 1 or week > len(items):
+        raise ValueError(f"Week {week} out of range (1..{len(items)})")
+
+    key, sp = items[week - 1]
+    # key is what roster() expects; can be int or 'Aug 15'
+    return key
+
 def get_team_roster_slots(league, week: int):
+    # Convert user week to the exact key type roster() expects
+    week_key = _resolve_week_key(league, week)
+
     rows = []
     for team in league.teams:
-        roster = team.roster(week=week)
+        # Try calling roster() with the derived key; handle variants gracefully
+        try:
+            roster = team.roster(week=week_key)
+        except TypeError:
+            # Some builds want the period number specifically
+            num = getattr(league.scoring_periods()[week_key], "number", None)
+            if num is None:
+                raise
+            roster = team.roster(week=num)
+
         for slot in roster.slots:
             rows.append({
                 "team_id": team.id,
@@ -87,3 +122,4 @@ def get_team_roster_slots(league, week: int):
                 "is_bench": getattr(slot, "is_bench", False),
             })
     return rows
+
