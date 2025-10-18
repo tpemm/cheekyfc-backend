@@ -56,3 +56,29 @@ def weekly_parquet(week: int = 1):
     if not f.exists():
         raise HTTPException(status_code=404, detail=f"Not found: {f.name}. Hit /run?week={week} first.")
     return FileResponse(str(f), media_type="application/octet-stream", filename=f.name)
+
+@app.get("/debug/periods")
+def debug_periods():
+    try:
+        import importlib
+        pipeline = importlib.import_module("src.fantrax_client")
+        # get a League with cookies/session (reuses your existing logic)
+        league = pipeline.fetch_league_objects()
+        periods = league.scoring_periods()  # dict[int|str, ScoringPeriod]
+        out = []
+        for key, sp in periods.items():
+            # sp has attributes like start, end, number, range
+            out.append({
+                "key": key,
+                "number": getattr(sp, "number", None),
+                "start": str(getattr(sp, "start", "")),
+                "end": str(getattr(sp, "end", "")),
+                "range": getattr(sp, "range", ""),
+            })
+        # sort by 'number' if available, else by 'start'
+        out.sort(key=lambda r: (r["number"] is None, r["number"], r["start"]))
+        return {"ok": True, "periods": out}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
