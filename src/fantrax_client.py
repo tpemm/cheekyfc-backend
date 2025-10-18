@@ -147,11 +147,30 @@ def _call_roster_any(team, key, sp):
     raise TypeError(f"Failed to call team.roster with any known signature. "
                     f"Tried with key={key!r}, number={num!r}. Last error: {last_err}")
 
+def _resolve_period_number(league, week: int) -> int:
+    """
+    Map a 1-based 'week' to the league's ScoringPeriod number (int).
+    According to docs, League.scoring_periods() => dict[int, ScoringPeriod]
+    where the KEY is the period number we can pass to team_roster(...).
+    """
+    periods = league.scoring_periods()  # { period_number (int) : ScoringPeriod }
+    if not isinstance(periods, dict) or not periods:
+        raise RuntimeError("Could not load scoring periods from Fantrax.")
+
+    # Sort by the integer key to make week 1 = first period, week 2 = second, etc.
+    numbers = sorted(int(n) for n in periods.keys())
+    if week < 1 or week > len(numbers):
+        raise ValueError(f"Week {week} out of range (1..{len(numbers)})")
+
+    return numbers[week - 1]  # the actual integer period_number to call with
+
 def get_team_roster_slots(league, week: int):
-    key, sp = _resolve_week_key(league, week)
+    period_number = _resolve_period_number(league, week)
+
     rows = []
+    # Per docs, use League.team_roster(team_id, period_number)
     for team in league.teams:
-        roster = _call_roster_any(team, key, sp)
+        roster = league.team_roster(team.id, period_number=period_number)
         for slot in roster.slots:
             rows.append({
                 "team_id": team.id,
