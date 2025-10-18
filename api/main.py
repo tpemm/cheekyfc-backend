@@ -7,7 +7,7 @@ import importlib
 
 app = FastAPI(title="Cheeky FC API")
 
-# CORS — tighten to your Vercel URL later
+# CORS — tighten to your frontend URL later
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,6 +18,22 @@ app.add_middleware(
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 API_KEY = os.getenv("API_KEY", "")
 
+# -----------------------------
+# Small helper to make debug payloads ASCII-safe
+# -----------------------------
+def _ascii(x):
+    try:
+        return str(x).encode("ascii", "ignore").decode("ascii")
+    except Exception:
+        try:
+            return str(x).encode("utf-8", "ignore").decode("utf-8")
+        except Exception:
+            return ""
+
+
+# -----------------------------
+# Basic health & auth helpers
+# -----------------------------
 @app.get("/")
 def root():
     return {"ok": True, "message": "Cheeky FC API"}
@@ -40,8 +56,10 @@ def require_api_key(request: Request):
     if not sent or sent != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-# ---------- DEBUG: versions / periods / roster signature / brute try ----------
 
+# -----------------------------
+# Debug: versions / periods / roster signatures
+# -----------------------------
 @app.get("/about/versions")
 def versions():
     try:
@@ -52,7 +70,7 @@ def versions():
             "fastapi": fastapi.__version__,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_ascii(e))
 
 @app.get("/debug/periods_raw")
 def debug_periods_raw():
@@ -61,19 +79,20 @@ def debug_periods_raw():
         league = fx.fetch_league_objects()
         periods = league.scoring_periods()
         sample = []
+        # Show up to 15 items to keep payload light
         for k in list(periods.keys())[:15]:
             sp = periods[k]
             sample.append({
-                "key_repr": repr(k),
-                "key_type": str(type(k)),
+                "key_repr": _ascii(repr(k)),
+                "key_type": _ascii(type(k)),
                 "sp_has_number": hasattr(sp, "number"),
                 "sp_number": getattr(sp, "number", None),
-                "sp_start": str(getattr(sp, "start", "")),
-                "sp_end": str(getattr(sp, "end", "")),
+                "sp_start": _ascii(getattr(sp, "start", "")),
+                "sp_end": _ascii(getattr(sp, "end", "")),
             })
         return {"ok": True, "len": len(periods), "sample": sample}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_ascii(e))
 
 @app.get("/debug/roster_try")
 def debug_roster_try(week: int = 1):
@@ -83,47 +102,49 @@ def debug_roster_try(week: int = 1):
         candidates, sp = fx._resolve_week_index(league, week)
         team = next(iter(league.teams))
 
-        tried = []
         # team.roster variants
         for label, val in candidates:
             try:
                 team.roster(val)
-                return {"ok": True, "method": "team.roster(positional)", "used": {"label": label, "value": repr(val)}}
-            except Exception as e:
-                tried.append({"method": "team.roster(positional)", "label": label, "value": repr(val), "err": str(e)})
+                return {"ok": True, "method": "team.roster(positional)", "used": {"label": _ascii(label), "value": _ascii(val)}}
+            except Exception:
+                pass
             for kw in ("week", "period", "scoring_period", "scoringPeriod", "period_number", "periodNumber"):
                 try:
                     team.roster(**{kw: val})
-                    return {"ok": True, "method": f"team.roster({kw}=...)", "used": {"label": label, "value": repr(val)}}
-                except Exception as e:
-                    tried.append({"method": f"team.roster({kw}=...)", "label": label, "value": repr(val), "err": str(e)})
+                    return {"ok": True, "method": f"team.roster({kw}=...)", "used": {"label": _ascii(label), "value": _ascii(val)}}
+                except Exception:
+                    pass
 
-        # league.team_roster variants
+        # league.team_roster variants (prefer int-like values)
         ints = []
         for label, val in candidates:
             if isinstance(val, int):
                 ints.append((label, val))
             elif isinstance(val, str) and val.isdigit():
                 ints.append((f"{label}->int", int(val)))
+
         for label, val in ints:
             for kw in ("period_number", "period", "scoring_period"):
                 try:
                     league.team_roster(team.id, **{kw: val})
-                    return {"ok": True, "method": f"league.team_roster({kw}=...)", "used": {"label": label, "value": repr(val)}}
-                except Exception as e:
-                    tried.append({"method": f"league.team_roster({kw}=...)", "label": label, "value": repr(val), "err": str(e)})
+                    return {"ok": True, "method": f"league.team_roster({kw}=...)", "used": {"label": _ascii(label), "value": _ascii(val)}}
+                except Exception:
+                    pass
             try:
                 league.team_roster(team.id, val)
-                return {"ok": True, "method": "league.team_roster(positional)", "used": {"label": label, "value": repr(val)}}
-            except Exception as e:
-                tried.append({"method": "league.team_roster(positional)", "label": label, "value": repr(val), "err": str(e)})
+                return {"ok": True, "method": "league.team_roster(positional)", "used": {"label": _ascii(label), "value": _ascii(val)}}
+            except Exception:
+                pass
 
-        return {"ok": False, "tried": tried}
+        return {"ok": False, "message": "Tried all known roster call variants; none succeeded."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_ascii(e))
 
-# ---------- PIPELINE RUN + FILE SERVE ----------
 
+# -----------------------------
+# Pipeline run + file serving
+# -----------------------------
 @app.get("/run")
 def run_pipeline(week: int = 1, request: Request = None):
     require_api_key(request)
@@ -132,7 +153,7 @@ def run_pipeline(week: int = 1, request: Request = None):
         p = pipeline.run(week=week)
         return {"ok": True, "week": week, "artifact": p}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_ascii(e))
 
 @app.get("/analysis/weekly.csv")
 def weekly_csv(week: int = 1):
